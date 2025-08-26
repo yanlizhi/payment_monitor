@@ -47,6 +47,10 @@
                     <label for="cvv">CVV</label>
                     <input type="text" id="cvv" value="123">
                 </div>
+                <div class="form-group">
+                    <label for="postal-code">Postal Code</label>
+                    <input type="text" id="postal-code" value="12345">
+                </div>
             </div>
 
             <div class="form-section">
@@ -84,7 +88,8 @@
                     number: document.getElementById('card-number').value,
                     expMonth: document.getElementById('exp-month').value,
                     expYear: document.getElementById('exp-year').value,
-                    cvv: document.getElementById('cvv').value
+                    cvv: document.getElementById('cvv').value,
+                    postalCode: document.getElementById('postal-code').value
                 },
                 browserEnv: {
                     userAgent: document.getElementById('user-agent').value,

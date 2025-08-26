@@ -52,16 +52,16 @@ app.post('/api/simulate-payment', async (req, res) => {
         // Find the Stripe iframe
         const frames = page.frames();
         console.log('Available frames:', frames.map(f => f.url()));
-        
+
         const stripeFrame = frames.find(frame =>
-            frame.url().includes('js.stripe.com')
+            frame.url().includes('elements-inner-card')
         );
 
         if (!stripeFrame) {
-            throw new Error('Stripe iframe not found');
+            throw new Error('Stripe card input iframe not found');
         }
 
-        console.log('Found Stripe frame:', stripeFrame.url());
+        console.log('Found Stripe card frame:', stripeFrame.url());
 
         // Wait for the card input fields to be available
         await stripeFrame.waitForSelector('input[name="cardnumber"]', { timeout: 15000 });
@@ -71,6 +71,17 @@ app.post('/api/simulate-payment', async (req, res) => {
         await stripeFrame.type('input[name="cardnumber"]', cardInfo.number, { delay: 100 });
         await stripeFrame.type('input[name="exp-date"]', `${cardInfo.expMonth}${cardInfo.expYear.slice(-2)}`, { delay: 100 });
         await stripeFrame.type('input[name="cvc"]', cardInfo.cvv, { delay: 100 });
+
+        // Add postal code if available
+        if (cardInfo.postalCode) {
+            try {
+                await stripeFrame.waitForSelector('input[name="postal"]', { timeout: 2000 });
+                await stripeFrame.type('input[name="postal"]', cardInfo.postalCode, { delay: 100 });
+                console.log('Postal code entered');
+            } catch (e) {
+                console.log('Postal code field not found or not required');
+            }
+        }
 
         console.log('Card information entered, triggering payment...');
 
