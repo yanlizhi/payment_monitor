@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        #payment-form {
+            max-width: 400px;
+            margin: 0 auto;
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 5px;
+        }
+
+        .form-row {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        input,
+        .StripeElement {
+            width: 95%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+
+        #card-errors {
+            color: red;
+            margin-top: 10px;
+        }
+
+        #payment-result {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 3px;
+            display: none;
+        }
+
+        #payment-result.success {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+
+        #payment-result.error {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+
+        button {
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 3px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="payment-form">
+        <div class="form-row">
+            <label for="card-name">Cardholder Name</label>
+            <input type="text" id="card-name">
+        </div>
+
+        <div class="form-row">
+            <label for="card-number-element">Card Number</label>
+            <div id="card-number-element"></div>
+            <div id="card-number-errors" role="alert"></div>
+        </div>
+
+        <div class="form-row">
+            <label for="card-expiry-element">Expiration Date</label>
+            <div id="card-expiry-element"></div>
+            <div id="card-expiry-errors" role="alert"></div>
+        </div>
+
+        <div class="form-row">
+            <label for="card-cvc-element">CVC</label>
+            <div id="card-cvc-element"></div>
+            <div id="card-cvc-errors" role="alert"></div>
+        </div>
+
+        <!-- The button is here for manual testing, but it will be triggered by Puppeteer -->
+        <button id="submit-button">Submit Payment</button>
+
+        <div id="payment-result"></div>
+    </div>
+
+    <script src="https://js.stripe.com/v3/"></script>
+    <script>
+        // Initialize Stripe with your test publishable key
+        const stripe = Stripe('pk_test_51Rzto2IB6C8gCmfgSMCWCdVZfkL5BTqtaUmNhhLLNG6h0wv1OsVr5qB3ioKf5DIVy3bEx4PAC7tYp999urmmKLfT000x8CJ9kd');
+        const elements = stripe.elements();
+
+        // Style for the Stripe Element
+        const style = {
+            base: {
+                fontSize: '16px',
+                color: '#32325d',
+            },
+        };
+
+        // Create and mount the card element
+        const card = elements.create('card', { style });
+        card.mount('#card-element');
+
+        // Handle real-time validation errors from the card Element.
+        card.on('change', ({ error }) => {
+            const displayError = document.getElementById('card-errors');
+            if (error) {
+                displayError.textContent = error.message;
+            } else {
+                displayError.textContent = '';
+            }
+        });
+
+        const resultContainer = document.getElementById('payment-result');
+
+        /**
+         * This function will be called by Puppeteer from the backend.
+         * It triggers the payment method creation process.
+         * @param {object} cardInfo - The cardholder information.
+         * @returns {Promise<object>} - A promise that resolves with the payment result.
+         */
+        window.triggerStripePayment = async (cardInfo) => {
+            try {
+                const nameInput = document.getElementById('card-name');
+                const { paymentMethod, error } = await stripe.createPaymentMethod({
+                    type: 'card',
+                    card: card,
+                    billing_details: {
+                        name: nameInput.value, // Use the value from the input field
+                    },
+                });
+
+                if (error) {
+                    console.error('Stripe Error:', error.message);
+                    resultContainer.textContent = `Error: ${error.message}`;
+                    resultContainer.className = 'error';
+                    resultContainer.style.display = 'block';
+                    return { error: error.message };
+                }
+
+                console.log('Stripe Success:', paymentMethod);
+                resultContainer.textContent = `Success! PaymentMethod ID: ${paymentMethod.id}`;
+                resultContainer.className = 'success';
+                resultContainer.style.display = 'block';
+                return { success: { paymentMethodId: paymentMethod.id } };
+
+            } catch (e) {
+                console.error('Exception:', e);
+                return { error: e.message };
+            }
+        };
+
+        // Optional: Add event listener for manual testing in the browser
+        document.getElementById('submit-button').addEventListener('click', async () => {
+            const cardName = document.getElementById('card-name').value;
+            await window.triggerStripePayment({ name: cardName });
+        });
+
+    </script>
+</body>
+
+</html>
