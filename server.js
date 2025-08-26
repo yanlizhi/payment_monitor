@@ -42,24 +42,32 @@ app.post('/api/simulate-payment', async (req, res) => {
             await page.type('#card-name', cardInfo.name);
         }
 
-        // --- IMPORTANT: Handle Stripe iFrame ---
-        // Stripe Elements are in an iframe, so we need to find the frame and type into it.
-        await page.waitForSelector('iframe[src^="https://js.stripe.com"]');
-        const stripeFrame = page.frames().find(f => f.url().startsWith('https://js.stripe.com'));
+        // Wait for Stripe Elements to load
+        await page.waitForSelector('#card-element iframe');
+        
+        // Wait a bit more for Stripe to fully initialize
+        await page.waitForTimeout(2000);
+
+        // --- Handle Stripe iFrame ---
+        // Find the Stripe iframe
+        const stripeFrame = await page.frames().find(frame => 
+            frame.url().includes('js.stripe.com')
+        );
 
         if (!stripeFrame) {
             throw new Error('Stripe iframe not found');
         }
 
-        // Type into the iframe's input fields.
-        // Selectors are based on current Stripe Element structure and may need updates if Stripe changes them.
-        await stripeFrame.type('input[name="cardnumber"]', cardInfo.number);
-        await stripeFrame.type('input[name="exp-date"]', `${cardInfo.expMonth}${cardInfo.expYear}`);
-        await stripeFrame.type('input[name="cvc"]', cardInfo.cvv);
+        // Wait for the card input fields to be available
+        await stripeFrame.waitForSelector('input[name="cardnumber"]', { timeout: 10000 });
 
-        // Now, trigger the payment submission on the page
+        // Type card information into Stripe Elements
+        await stripeFrame.type('input[name="cardnumber"]', cardInfo.number, { delay: 100 });
+        await stripeFrame.type('input[name="exp-date"]', `${cardInfo.expMonth}${cardInfo.expYear.slice(-2)}`, { delay: 100 });
+        await stripeFrame.type('input[name="cvc"]', cardInfo.cvv, { delay: 100 });
+
+        // Now trigger the payment submission
         const paymentResult = await page.evaluate(async () => {
-            // The data has been typed, now we just call the function which will use the data from the Elements
             return await window.triggerStripePayment();
         });
 
