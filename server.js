@@ -45,8 +45,10 @@ app.post('/api/simulate-payment', async (req, res) => {
         // Wait for Stripe Elements to load
         await page.waitForSelector('#card-element iframe');
         
-        // Wait a bit more for Stripe to fully initialize
-        await page.waitForTimeout(2000);
+        // Wait for Stripe to fully initialize
+        await page.waitForFunction(() => {
+            return window.stripe && document.querySelector('#card-element iframe');
+        }, { timeout: 10000 });
 
         // --- Handle Stripe iFrame ---
         // Find the Stripe iframe
