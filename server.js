@@ -43,16 +43,17 @@ app.post('/api/simulate-payment', async (req, res) => {
         }
 
         // Wait for Stripe Elements to load
-        await page.waitForSelector('#card-element iframe');
-        
-        // Wait for Stripe to fully initialize
-        await page.waitForFunction(() => {
-            return window.stripe && document.querySelector('#card-element iframe');
-        }, { timeout: 10000 });
+        await page.waitForSelector('#card-element iframe', { timeout: 15000 });
+
+        // Give Stripe a moment to initialize
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         // --- Handle Stripe iFrame ---
         // Find the Stripe iframe
-        const stripeFrame = await page.frames().find(frame => 
+        const frames = page.frames();
+        console.log('Available frames:', frames.map(f => f.url()));
+        
+        const stripeFrame = frames.find(frame =>
             frame.url().includes('js.stripe.com')
         );
 
@@ -60,13 +61,18 @@ app.post('/api/simulate-payment', async (req, res) => {
             throw new Error('Stripe iframe not found');
         }
 
+        console.log('Found Stripe frame:', stripeFrame.url());
+
         // Wait for the card input fields to be available
-        await stripeFrame.waitForSelector('input[name="cardnumber"]', { timeout: 10000 });
+        await stripeFrame.waitForSelector('input[name="cardnumber"]', { timeout: 15000 });
 
         // Type card information into Stripe Elements
+        console.log('Typing card information...');
         await stripeFrame.type('input[name="cardnumber"]', cardInfo.number, { delay: 100 });
         await stripeFrame.type('input[name="exp-date"]', `${cardInfo.expMonth}${cardInfo.expYear.slice(-2)}`, { delay: 100 });
         await stripeFrame.type('input[name="cvc"]', cardInfo.cvv, { delay: 100 });
+
+        console.log('Card information entered, triggering payment...');
 
         // Now trigger the payment submission
         const paymentResult = await page.evaluate(async () => {
