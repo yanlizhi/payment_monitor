@@ -134,18 +134,29 @@ class RequestValidator {
         // Token mode specific validation
         if (isTokenMode) {
             try {
-                // Try to parse as JSON (for real card data) or check if it's a valid Stripe token
-                if (!stripeToken.startsWith('tok_') && !stripeToken.startsWith('pm_')) {
+                // Check if it's a direct Stripe token/PaymentMethod ID
+                if (stripeToken.startsWith('tok_') || stripeToken.startsWith('pm_')) {
+                    // Valid direct token/PaymentMethod ID
+                } else {
                     // Try to parse as JSON to validate it's our card data format
                     const tokenData = JSON.parse(stripeToken);
-                    if (!tokenData.id || (!tokenData._cardData && !tokenData._useTestToken)) {
+                    if (!tokenData.id) {
+                        throw new Error('Invalid token data structure - missing id');
+                    }
+                    // Allow PaymentMethod IDs, tokens, or special card data formats
+                    if (!tokenData.id.startsWith('tok_') &&
+                        !tokenData.id.startsWith('pm_') &&
+                        tokenData.id !== 'real_card_data' &&
+                        tokenData.id !== 'real_simulation_token' &&
+                        !tokenData._cardData &&
+                        !tokenData._useTestToken) {
                         throw new Error('Invalid token data structure');
                     }
                 }
             } catch (parseError) {
                 return res.status(400).json({
                     error: 'Invalid token format',
-                    message: 'stripeToken must be a valid Stripe token or properly formatted card data'
+                    message: `stripeToken must be a valid Stripe token or properly formatted card data. Error: ${parseError.message}`
                 });
             }
         }
@@ -543,7 +554,7 @@ class SecureBrowserLauncher {
 
 // Real Stripe Transaction Handler
 class RealStripeHandler {
-    static async createPaymentMethod(cardInfo) {
+    static async createPaymentMethod(cardInfo, amount = 1000, description = 'Test Payment') {
         try {
             const paymentMethod = await stripe.paymentMethods.create({
                 type: 'card',
@@ -561,10 +572,25 @@ class RealStripeHandler {
                 }
             });
 
+            // Create PaymentIntent with the PaymentMethod
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount, // Amount in cents
+                currency: 'usd',
+                payment_method: paymentMethod.id,
+                description: description,
+                confirm: true,
+                return_url: 'https://your-website.com/return'
+            });
+
             return {
                 success: {
+                    paymentIntentId: paymentIntent.id,
                     paymentMethodId: paymentMethod.id,
                     mode: 'real_direct',
+                    status: paymentIntent.status,
+                    amount: paymentIntent.amount,
+                    currency: paymentIntent.currency,
+                    description: description,
                     last4: paymentMethod.card.last4,
                     brand: paymentMethod.card.brand,
                     cardholderName: cardInfo.name,
@@ -580,12 +606,110 @@ class RealStripeHandler {
         }
     }
 
-    static async processPaymentMethod(paymentMethodId, amount = 100) {
+    // 新方法：使用浏览器自动化处理卡信息
+    static async processCardWithBrowser(cardInfo, paymentInfo, browserEnv) {
+        let browser = null;
+        try {
+            console.log('启动浏览器自动化支付流程...');
+
+            // 使用传入的浏览器环境信息
+            const { browser: launchedBrowser, page } = await SecureBrowserLauncher.launch(browserEnv);
+            browser = launchedBrowser;
+
+            // 导航到支付页面
+            const port = process.env.PORT || 3000;
+            await page.goto(`http://localhost:${port}/payment-test.html`, {
+                waitUntil: 'networkidle2',
+                timeout: 30000
+            });
+
+            // 填入支付信息
+            await page.evaluate((data) => {
+                document.getElementById('payment-amount').value = data.amount.toFixed(2);
+                document.getElementById('payment-description').value = data.description;
+                document.getElementById('card-name').value = data.cardholderName;
+            }, {
+                amount: paymentInfo.amount,
+                description: paymentInfo.description,
+                cardholderName: cardInfo.name
+            });
+
+            // 等待Stripe Elements加载
+            await page.waitForSelector('#card-element iframe', { timeout: 15000 });
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // 找到Stripe iframe并填入卡信息
+            const frames = page.frames();
+            const stripeFrame = frames.find(frame =>
+                frame.url().includes('elements-inner-card')
+            );
+
+            if (!stripeFrame) {
+                throw new Error('未找到Stripe卡片输入框');
+            }
+
+            await stripeFrame.waitForSelector('input[name="cardnumber"]', { timeout: 15000 });
+
+            // 填入卡片信息
+            await stripeFrame.type('input[name="cardnumber"]', cardInfo.number, { delay: 100 });
+            await stripeFrame.type('input[name="exp-date"]', `${cardInfo.expMonth}${cardInfo.expYear.slice(-2)}`, { delay: 100 });
+            await stripeFrame.type('input[name="cvc"]', cardInfo.cvv, { delay: 100 });
+
+            // 如果有邮政编码，填入
+            if (cardInfo.postalCode) {
+                try {
+                    await stripeFrame.waitForSelector('input[name="postal"]', { timeout: 2000 });
+                    await stripeFrame.type('input[name="postal"]', cardInfo.postalCode, { delay: 100 });
+                } catch (e) {
+                    console.log('邮政编码字段未找到或不需要');
+                }
+            }
+
+            console.log('卡片信息填入完成，触发支付...');
+
+            // 触发支付
+            const result = await page.evaluate(async () => {
+                return await window.triggerStripePayment();
+            });
+
+            await browser.close();
+
+            if (result.error) {
+                throw new Error(result.error);
+            }
+
+            return {
+                success: {
+                    ...result.success,
+                    flow: 'browser_automated',
+                    real_transaction: true
+                }
+            };
+
+        } catch (error) {
+            if (browser) {
+                try {
+                    await browser.close();
+                } catch (e) {
+                    console.error('关闭浏览器时出错:', e.message);
+                }
+            }
+
+            return {
+                error: `浏览器自动化支付失败: ${error.message}`,
+                type: 'browser_automation_error',
+                real_transaction: true
+            };
+        }
+    }
+
+    static async processPaymentMethod(paymentMethodId, amount = 1000, description = 'Test Payment') {
         try {
             const paymentIntent = await stripe.paymentIntents.create({
                 amount: amount, // Amount in cents
                 currency: 'usd',
                 payment_method: paymentMethodId,
+                description: description,
                 confirm: true,
                 return_url: 'https://your-website.com/return'
             });
@@ -597,6 +721,8 @@ class RealStripeHandler {
                     mode: 'real_token',
                     status: paymentIntent.status,
                     amount: paymentIntent.amount,
+                    currency: paymentIntent.currency,
+                    description: description,
                     real_transaction: true
                 }
             };
@@ -609,21 +735,21 @@ class RealStripeHandler {
         }
     }
 
-    static async createPaymentMethodFromToken(tokenData) {
+    static async createPaymentMethodFromToken(tokenData, amount = 1000, description = 'Test Payment') {
         try {
             // If it's using a Stripe test token
             if (tokenData._useTestToken && tokenData.id.startsWith('tok_')) {
-                return await this.processStripeToken(tokenData.id);
+                return await this.processStripeToken(tokenData.id, null, amount, description);
             }
 
             // If it's a real card data marker, process the actual card info
             if (tokenData.id === 'real_card_data' && tokenData._cardData) {
-                return await this.createPaymentMethod(tokenData._cardData);
+                return await this.createPaymentMethod(tokenData._cardData, amount, description);
             }
 
             // If it's a real PaymentMethod ID, process it
             if (tokenData.id.startsWith('pm_')) {
-                return await this.processPaymentMethod(tokenData.id);
+                return await this.processPaymentMethod(tokenData.id, amount, description);
             }
 
             // Otherwise, it's a simulation token
@@ -637,7 +763,7 @@ class RealStripeHandler {
         }
     }
 
-    static async processStripeToken(tokenId, billingDetails = null) {
+    static async processStripeToken(tokenId, billingDetails = null, amount = 1000, description = 'Test Payment') {
         try {
             // Create PaymentMethod from Stripe token with optional billing details
             const paymentMethodData = {
@@ -646,18 +772,33 @@ class RealStripeHandler {
                     token: tokenId
                 }
             };
-            
+
             // Add billing details if provided
             if (billingDetails) {
                 paymentMethodData.billing_details = billingDetails;
             }
-            
+
             const paymentMethod = await stripe.paymentMethods.create(paymentMethodData);
+
+            // Create PaymentIntent with the PaymentMethod
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount, // Amount in cents
+                currency: 'usd',
+                payment_method: paymentMethod.id,
+                description: description,
+                confirm: true,
+                return_url: 'https://your-website.com/return'
+            });
 
             return {
                 success: {
+                    paymentIntentId: paymentIntent.id,
                     paymentMethodId: paymentMethod.id,
                     mode: 'real_token',
+                    status: paymentIntent.status,
+                    amount: paymentIntent.amount,
+                    currency: paymentIntent.currency,
+                    description: description,
                     last4: paymentMethod.card.last4,
                     brand: paymentMethod.card.brand,
                     real_transaction: true
@@ -675,7 +816,7 @@ class RealStripeHandler {
 
 // Payment Mode Handler
 class PaymentModeHandler {
-    static async handleTokenMode(page, stripeToken, cardholderName, port) {
+    static async handleTokenMode(page, stripeToken, cardholderName, port, paymentInfo = null) {
         try {
             await page.goto(`http://localhost:${port}/payment-test.html`, {
                 waitUntil: 'networkidle2',
@@ -684,9 +825,25 @@ class PaymentModeHandler {
 
             await page.waitForSelector('#payment-form', { timeout: 15000 });
 
+            // Fill payment information if provided
+            if (paymentInfo) {
+                if (paymentInfo.amount) {
+                    await page.evaluate((amount) => {
+                        document.getElementById('payment-amount').value = amount.toString();
+                    }, paymentInfo.amount);
+                }
+                if (paymentInfo.description) {
+                    await page.evaluate((description) => {
+                        document.getElementById('payment-description').value = description;
+                    }, paymentInfo.description);
+                }
+            }
+
             // Fill cardholder name if provided
             if (cardholderName) {
-                await page.type('#card-name', cardholderName);
+                await page.evaluate((name) => {
+                    document.getElementById('card-name').value = name;
+                }, cardholderName);
             }
 
             // Wait for page to be ready
@@ -705,7 +862,7 @@ class PaymentModeHandler {
         }
     }
 
-    static async handleDirectMode(page, cardInfo, port) {
+    static async handleDirectMode(page, cardInfo, port, paymentInfo = null) {
         try {
             await page.goto(`http://localhost:${port}/payment-test.html`, {
                 waitUntil: 'networkidle2',
@@ -714,9 +871,25 @@ class PaymentModeHandler {
 
             await page.waitForSelector('#payment-form', { timeout: 15000 });
 
+            // Fill payment information if provided
+            if (paymentInfo) {
+                if (paymentInfo.amount) {
+                    await page.evaluate((amount) => {
+                        document.getElementById('payment-amount').value = amount.toString();
+                    }, paymentInfo.amount);
+                }
+                if (paymentInfo.description) {
+                    await page.evaluate((description) => {
+                        document.getElementById('payment-description').value = description;
+                    }, paymentInfo.description);
+                }
+            }
+
             // Fill cardholder name
             if (cardInfo.name) {
-                await page.type('#card-name', cardInfo.name);
+                await page.evaluate((name) => {
+                    document.getElementById('card-name').value = name;
+                }, cardInfo.name);
             }
 
             // Wait for Stripe Elements to load
@@ -884,9 +1057,98 @@ app.use('/api', AuthenticationMiddleware.validateApiKey);
 app.use('/api', rateLimiter);
 
 // Real Stripe Transaction API
+// Card-to-Token-to-Payment API - 使用浏览器自动化安全处理卡信息
+app.post('/api/card-to-payment', AuthenticationMiddleware.validateApiKey, async (req, res) => {
+    const requestId = SecureLogger.generateRequestId();
+    req.requestId = requestId;
+    req.startTime = Date.now();
+
+    const { cardInfo, paymentInfo, browserEnv } = req.body;
+
+    // 验证必需字段
+    if (!cardInfo || !cardInfo.number || !cardInfo.expMonth || !cardInfo.expYear || !cardInfo.cvv || !cardInfo.name) {
+        return res.status(400).json({
+            error: 'Missing required card information',
+            message: 'cardInfo must include: number, expMonth, expYear, cvv, name',
+            requestId: requestId
+        });
+    }
+
+    if (!paymentInfo || !paymentInfo.amount) {
+        return res.status(400).json({
+            error: 'Missing payment information',
+            message: 'paymentInfo must include amount',
+            requestId: requestId
+        });
+    }
+
+    if (!browserEnv || !browserEnv.userAgent || !browserEnv.viewport) {
+        return res.status(400).json({
+            error: 'Missing browser environment information',
+            message: 'browserEnv must include userAgent and viewport',
+            requestId: requestId
+        });
+    }
+
+    // Log transaction attempt
+    SecureLogger.logSystemEvent('card_to_payment_initiated', 'Browser-automated card-to-payment transaction initiated', {
+        apiKeyId: req.apiKeyInfo.id,
+        amount: paymentInfo.amount,
+        description: paymentInfo.description,
+        cardLast4: cardInfo.number.slice(-4),
+        real_transaction: true,
+        flow: 'browser_automated'
+    });
+
+    try {
+        console.log(`处理支付金额: $${paymentInfo.amount} 使用浏览器自动化`);
+
+        // 使用浏览器自动化处理卡信息
+        const paymentResult = await RealStripeHandler.processCardWithBrowser(cardInfo, paymentInfo, browserEnv);
+
+        // 添加时间戳和请求ID
+        if (paymentResult.success) {
+            paymentResult.success.timestamp = new Date().toISOString();
+            paymentResult.success.requestId = requestId;
+            paymentResult.success.processingTime = Date.now() - req.startTime;
+        } else if (paymentResult.error) {
+            paymentResult.timestamp = new Date().toISOString();
+            paymentResult.requestId = requestId;
+            paymentResult.processingTime = Date.now() - req.startTime;
+        }
+
+        // 记录结果
+        SecureLogger.logPaymentRequest(req, paymentResult);
+
+        const statusCode = paymentResult.success ? 200 : 400;
+        res.status(statusCode).json(paymentResult);
+
+    } catch (error) {
+        SecureLogger.logApplicationError(error, {
+            apiKeyId: req.apiKeyInfo?.id,
+            real_transaction: true,
+            flow: 'browser_automated',
+            cardLast4: cardInfo.number.slice(-4)
+        });
+
+        res.status(500).json({
+            error: 'Browser-automated payment processing failed',
+            details: error.message,
+            type: 'browser_automation_error',
+            timestamp: new Date().toISOString(),
+            requestId: requestId,
+            processingTime: Date.now() - req.startTime
+        });
+    }
+});
+
 app.post('/api/real-payment', RequestValidator.validatePaymentRequest, async (req, res) => {
-    const { cardInfo, stripeToken, cardholderName } = req.body;
+    const { cardInfo, stripeToken, cardholderName, paymentInfo } = req.body;
     const isTokenMode = req.simulationMode === 'token';
+
+    // Extract payment amount (convert to cents for Stripe)
+    const amount = paymentInfo ? Math.round(paymentInfo.amount * 100) : 1000; // Default $10.00
+    const description = paymentInfo?.description || 'Test Payment Transaction';
 
     // Log real transaction attempt
     SecureLogger.logSystemEvent('real_payment_initiated', `Real Stripe payment initiated in ${isTokenMode ? 'token' : 'direct'} mode`, {
@@ -900,10 +1162,10 @@ app.post('/api/real-payment', RequestValidator.validatePaymentRequest, async (re
 
         if (isTokenMode) {
             // Token mode: Process token data (could be real card data or PaymentMethod ID)
-            paymentResult = await RealStripeHandler.createPaymentMethodFromToken(JSON.parse(stripeToken));
+            paymentResult = await RealStripeHandler.createPaymentMethodFromToken(JSON.parse(stripeToken), amount, description);
         } else {
             // Direct mode: Create PaymentMethod from card info
-            paymentResult = await RealStripeHandler.createPaymentMethod(cardInfo);
+            paymentResult = await RealStripeHandler.createPaymentMethod(cardInfo, amount, description);
         }
 
         // Add timestamp and request ID
@@ -935,7 +1197,7 @@ app.post('/api/real-payment', RequestValidator.validatePaymentRequest, async (re
 });
 
 app.post('/api/simulate-payment', RequestValidator.validatePaymentRequest, async (req, res) => {
-    const { cardInfo, stripeToken, cardholderName, browserEnv } = req.body;
+    const { cardInfo, stripeToken, cardholderName, browserEnv, paymentInfo } = req.body;
     const isTokenMode = req.simulationMode === 'token';
 
     // Log request initiation with secure data handling
@@ -957,11 +1219,11 @@ app.post('/api/simulate-payment', RequestValidator.validatePaymentRequest, async
         if (isTokenMode) {
             // Token Mode: Use PaymentModeHandler
             console.log('Using Token mode - processing with PaymentModeHandler');
-            paymentResult = await PaymentModeHandler.handleTokenMode(page, stripeToken, cardholderName, port);
+            paymentResult = await PaymentModeHandler.handleTokenMode(page, stripeToken, cardholderName, port, paymentInfo);
         } else {
             // Direct Mode: Use PaymentModeHandler
             console.log('Using Direct mode - processing with PaymentModeHandler');
-            paymentResult = await PaymentModeHandler.handleDirectMode(page, cardInfo, port);
+            paymentResult = await PaymentModeHandler.handleDirectMode(page, cardInfo, port, paymentInfo);
         }
 
         // Add mode and timestamp to result

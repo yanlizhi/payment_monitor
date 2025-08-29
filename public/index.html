@@ -29,8 +29,14 @@
 
         .form-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 20px;
+        }
+
+        @media (max-width: 1024px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         .form-section {
@@ -198,6 +204,19 @@
         </div>
 
         <div class="form-grid">
+            <div class="form-section">
+                <h3>Payment Information</h3>
+                <div class="form-group">
+                    <label for="payment-amount">Payment Amount (USD)</label>
+                    <input type="number" id="payment-amount" value="10.00" step="0.01" min="0.50">
+                    <small style="color: #666;">Minimum $0.50 for Stripe processing</small>
+                </div>
+                <div class="form-group">
+                    <label for="payment-description">Description</label>
+                    <input type="text" id="payment-description" value="Test Payment Transaction">
+                </div>
+            </div>
+
             <div class="form-section">
                 <h3>Card Information (Test Data)</h3>
                 <div class="form-group">
@@ -403,11 +422,12 @@
 
         // Secure Request Builder
         class SecureRequestBuilder {
-            static buildTokenRequest(token, cardholderName, browserEnv) {
+            static buildTokenRequest(token, cardholderName, browserEnv, paymentInfo) {
                 return {
                     stripeToken: token.id,
                     cardholderName: cardholderName,
                     browserEnv: browserEnv,
+                    paymentInfo: paymentInfo,
                     tokenMetadata: {
                         last4: token.card.last4,
                         brand: token.card.brand,
@@ -417,10 +437,11 @@
                 };
             }
 
-            static buildDirectRequest(cardInfo, browserEnv) {
+            static buildDirectRequest(cardInfo, browserEnv, paymentInfo) {
                 return {
                     cardInfo: cardInfo,
                     browserEnv: browserEnv,
+                    paymentInfo: paymentInfo,
                     fingerprintOptions: {
                         useStealth: true
                     }
@@ -439,7 +460,70 @@
             }
 
             static displaySuccess(resultDiv, result) {
-                resultDiv.textContent = JSON.stringify(result, null, 2);
+                if (result.success) {
+                    const success = result.success;
+                    let html = '<h3>✅ Payment Successful!</h3>';
+                    
+                    html += '<div class="result-details">';
+                    
+                    // Payment Intent Information
+                    if (success.paymentIntentId) {
+                        html += `<p><strong>Payment Intent ID:</strong> ${success.paymentIntentId}</p>`;
+                    }
+                    
+                    if (success.status) {
+                        const statusIcon = success.status === 'succeeded' ? '✅' : '⏳';
+                        html += `<p><strong>Status:</strong> ${statusIcon} ${success.status}</p>`;
+                    }
+                    
+                    if (success.amount) {
+                        const amount = (success.amount / 100).toFixed(2);
+                        const currency = (success.currency || 'USD').toUpperCase();
+                        html += `<p><strong>Amount:</strong> $${amount} ${currency}</p>`;
+                    }
+                    
+                    if (success.description) {
+                        html += `<p><strong>Description:</strong> ${success.description}</p>`;
+                    }
+                    
+                    // Payment Method Information
+                    if (success.paymentMethodId) {
+                        html += `<p><strong>Payment Method ID:</strong> ${success.paymentMethodId}</p>`;
+                    }
+                    
+                    if (success.last4) {
+                        html += `<p><strong>Card:</strong> ${success.brand} ****${success.last4}</p>`;
+                    }
+                    
+                    if (success.cardholderName) {
+                        html += `<p><strong>Cardholder:</strong> ${success.cardholderName}</p>`;
+                    }
+                    
+                    if (success.mode) {
+                        html += `<p><strong>Mode:</strong> ${success.mode}</p>`;
+                    }
+                    
+                    if (success.real_transaction) {
+                        html += '<p><strong>🔥 REAL TRANSACTION:</strong> This was processed with actual Stripe API!</p>';
+                    }
+                    
+                    if (success.simulation_note) {
+                        html += `<p><strong>ℹ️ Note:</strong> ${success.simulation_note}</p>`;
+                    }
+                    
+                    // Show raw JSON for debugging
+                    html += '<details style="margin-top: 15px;"><summary>Raw Response (for debugging)</summary>';
+                    html += `<pre style="background: #f8f9fa; padding: 10px; border-radius: 3px; font-size: 12px;">${JSON.stringify(result, null, 2)}</pre>`;
+                    html += '</details>';
+                    
+                    html += '</div>';
+                    
+                    resultDiv.innerHTML = html;
+                } else {
+                    // Fallback to JSON display
+                    resultDiv.textContent = JSON.stringify(result, null, 2);
+                }
+                
                 resultDiv.style.backgroundColor = '#d4edda';
                 resultDiv.style.color = '#155724';
                 resultDiv.style.border = '1px solid #c3e6cb';
@@ -461,6 +545,12 @@
             const mode = modeSelector.currentMode;
 
             ErrorHandler.displayProgress(resultDiv, `🔄 ${mode.toUpperCase()} MODE: Simulation in progress...`);
+
+            // Collect payment information
+            const paymentInfo = {
+                amount: parseFloat(document.getElementById('payment-amount').value),
+                description: document.getElementById('payment-description').value
+            };
 
             // Collect card information
             const cardInfo = {
@@ -498,11 +588,12 @@
                         payload = {
                             stripeToken: JSON.stringify(cardDataToken),
                             cardholderName: cardInfo.name,
-                            browserEnv: browserEnv
+                            browserEnv: browserEnv,
+                            paymentInfo: paymentInfo
                         };
                     } else {
                         // Real Direct Mode: Send card info for real processing
-                        payload = SecureRequestBuilder.buildDirectRequest(cardInfo, browserEnv);
+                        payload = SecureRequestBuilder.buildDirectRequest(cardInfo, browserEnv, paymentInfo);
                     }
 
                     apiEndpoint = '/api/real-payment';
@@ -516,10 +607,10 @@
 
                         ErrorHandler.displayProgress(resultDiv, `✅ Token created successfully (${token.card.brand} ****${token.card.last4})\n🔄 Sending secure request to server...`);
 
-                        payload = SecureRequestBuilder.buildTokenRequest(token, cardInfo.name, browserEnv);
+                        payload = SecureRequestBuilder.buildTokenRequest(token, cardInfo.name, browserEnv, paymentInfo);
                     } else {
                         // Direct Mode: Send card info directly (backward compatibility)
-                        payload = SecureRequestBuilder.buildDirectRequest(cardInfo, browserEnv);
+                        payload = SecureRequestBuilder.buildDirectRequest(cardInfo, browserEnv, paymentInfo);
                     }
 
                     apiEndpoint = '/api/simulate-payment';

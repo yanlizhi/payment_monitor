@@ -76,8 +76,18 @@
 
     <div id="payment-form">
         <div class="form-row">
+            <label for="payment-amount">Payment Amount (USD)</label>
+            <input type="number" id="payment-amount" value="10.00" step="0.01" min="0.50">
+        </div>
+
+        <div class="form-row">
+            <label for="payment-description">Payment Description</label>
+            <input type="text" id="payment-description" value="Test Payment Transaction">
+        </div>
+
+        <div class="form-row">
             <label for="card-name">Cardholder Name</label>
-            <input type="text" id="card-name">
+            <input type="text" id="card-name" value="John Doe">
         </div>
 
         <div class="form-row">
@@ -126,16 +136,19 @@
 
         /**
          * Direct Mode: This function will be called by Puppeteer from the backend.
-         * It triggers the payment method creation process using card elements.
+         * It creates a PaymentMethod and then processes a complete payment transaction.
          * @param {object} cardInfo - The cardholder information (optional, name comes from input field).
          * @returns {Promise<object>} - A promise that resolves with the payment result.
          */
         window.triggerStripePayment = async (cardInfo) => {
             try {
                 const nameInput = document.getElementById('card-name');
+                const amountInput = document.getElementById('payment-amount');
+                const descriptionInput = document.getElementById('payment-description');
 
-                console.log('Processing direct payment with card elements');
+                console.log('Processing complete payment transaction with card elements');
 
+                // Step 1: Create PaymentMethod
                 const { paymentMethod, error } = await stripe.createPaymentMethod({
                     type: 'card',
                     card: card,
@@ -146,31 +159,79 @@
 
                 if (error) {
                     console.error('Stripe Error:', error.message);
-                    resultContainer.textContent = `Error: ${error.message}`;
-                    resultContainer.className = 'error';
+                    resultContainer.innerHTML = `<div class="error">Error: ${error.message}</div>`;
                     resultContainer.style.display = 'block';
                     return { error: error.message };
                 }
 
-                console.log('Stripe Success:', paymentMethod);
-                resultContainer.textContent = `Success! PaymentMethod ID: ${paymentMethod.id}`;
-                resultContainer.className = 'success';
-                resultContainer.style.display = 'block';
-
-                return {
-                    success: {
-                        paymentMethodId: paymentMethod.id,
-                        mode: 'direct',
-                        last4: paymentMethod.card?.last4,
-                        brand: paymentMethod.card?.brand,
-                        cardholderName: nameInput.value || 'Direct User'
+                // Step 2: Send to backend for PaymentIntent creation
+                const paymentData = {
+                    stripeToken: JSON.stringify({
+                        id: paymentMethod.id
+                    }),
+                    cardholderName: nameInput.value || 'Direct User',
+                    paymentInfo: {
+                        amount: parseFloat(amountInput.value || 10.00),
+                        description: descriptionInput.value || 'Test Payment Transaction'
+                    },
+                    browserEnv: {
+                        userAgent: navigator.userAgent,
+                        viewport: {
+                            width: window.innerWidth,
+                            height: window.innerHeight
+                        }
                     }
                 };
 
+                console.log('Sending payment data to backend:', paymentData);
+
+                const response = await fetch('/api/real-payment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': 'test-api-key'
+                    },
+                    body: JSON.stringify(paymentData)
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${result.details || result.error}`);
+                }
+
+                console.log('Payment Success:', result);
+                
+                // Display detailed success information
+                if (result.success) {
+                    const success = result.success;
+                    resultContainer.innerHTML = `
+                        <div class="success">
+                            <h3>✅ Payment Successful!</h3>
+                            <div class="result-details">
+                                ${success.paymentIntentId ? `<p><strong>Payment Intent ID:</strong> ${success.paymentIntentId}</p>` : ''}
+                                ${success.status ? `<p><strong>Status:</strong> ${success.status === 'succeeded' ? '✅' : '⏳'} ${success.status}</p>` : ''}
+                                ${success.amount ? `<p><strong>Amount:</strong> $${(success.amount / 100).toFixed(2)} ${(success.currency || 'USD').toUpperCase()}</p>` : ''}
+                                ${success.description ? `<p><strong>Description:</strong> ${success.description}</p>` : ''}
+                                ${success.paymentMethodId ? `<p><strong>Payment Method ID:</strong> ${success.paymentMethodId}</p>` : ''}
+                                ${success.last4 ? `<p><strong>Card:</strong> ${success.brand} ****${success.last4}</p>` : ''}
+                                ${success.cardholderName ? `<p><strong>Cardholder:</strong> ${success.cardholderName}</p>` : ''}
+                                ${success.real_transaction ? '<p><strong>🔥 REAL TRANSACTION:</strong> This was processed with actual Stripe API!</p>' : ''}
+                                ${success.simulation_note ? `<p><strong>ℹ️ Note:</strong> ${success.simulation_note}</p>` : ''}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultContainer.innerHTML = `<div class="success">Payment completed: ${JSON.stringify(result)}</div>`;
+                }
+                
+                resultContainer.style.display = 'block';
+
+                return result;
+
             } catch (e) {
-                console.error('Direct Exception:', e);
-                resultContainer.textContent = `Direct Error: ${e.message}`;
-                resultContainer.className = 'error';
+                console.error('Payment Exception:', e);
+                resultContainer.innerHTML = `<div class="error">Payment Error: ${e.message}</div>`;
                 resultContainer.style.display = 'block';
                 return { error: e.message };
             }
@@ -178,61 +239,84 @@
 
         /**
          * Token Mode: This function will be called by Puppeteer from the backend.
-         * It simulates payment processing using a pre-created Stripe token.
+         * It processes a complete payment transaction using a pre-created Stripe token.
          * @param {string} stripeToken - The Stripe token ID.
          * @returns {Promise<object>} - A promise that resolves with the payment result.
          */
         window.triggerStripePaymentWithToken = async (stripeToken) => {
             try {
                 const nameInput = document.getElementById('card-name');
+                const amountInput = document.getElementById('payment-amount');
+                const descriptionInput = document.getElementById('payment-description');
 
-                console.log('Processing token:', stripeToken.substring(0, 12) + '...');
+                console.log('Processing complete payment transaction with token:', stripeToken.substring(0, 12) + '...');
 
-                // Validate token format
-                if (!stripeToken || !stripeToken.startsWith('tok_')) {
-                    throw new Error('Invalid token format');
-                }
-
-                // Simulate token processing delay
-                await new Promise(resolve => setTimeout(resolve, 1000));
-
-                // In a real implementation, this would use the token with Stripe's API
-                // For simulation purposes, we'll create a mock successful response
-                const mockPaymentMethodId = `pm_token_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-                // Extract some mock card info from token (in real scenario, this would come from Stripe)
-                const mockCardInfo = {
-                    last4: stripeToken.slice(-4).padStart(4, '0'),
-                    brand: 'visa', // Default for simulation
-                    exp_month: 12,
-                    exp_year: 2028
-                };
-
-                console.log('Token processed successfully:', {
-                    tokenId: stripeToken.substring(0, 12) + '...',
-                    paymentMethodId: mockPaymentMethodId,
-                    cardInfo: mockCardInfo
-                });
-
-                resultContainer.textContent = `Token Success! PaymentMethod ID: ${mockPaymentMethodId}`;
-                resultContainer.className = 'success';
-                resultContainer.style.display = 'block';
-
-                return {
-                    success: {
-                        paymentMethodId: mockPaymentMethodId,
-                        mode: 'token',
-                        last4: mockCardInfo.last4,
-                        brand: mockCardInfo.brand,
-                        tokenId: stripeToken,
-                        cardholderName: nameInput.value || 'Token User'
+                // Send to backend for complete payment processing
+                const paymentData = {
+                    stripeToken: stripeToken,
+                    cardholderName: nameInput.value || 'Token User',
+                    paymentInfo: {
+                        amount: parseFloat(amountInput.value || 10.00),
+                        description: descriptionInput.value || 'Test Payment Transaction'
+                    },
+                    browserEnv: {
+                        userAgent: navigator.userAgent,
+                        viewport: {
+                            width: window.innerWidth,
+                            height: window.innerHeight
+                        }
                     }
                 };
 
+                console.log('Sending payment data to backend:', paymentData);
+
+                const response = await fetch('/api/real-payment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': 'test-api-key'
+                    },
+                    body: JSON.stringify(paymentData)
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${result.details || result.error}`);
+                }
+
+                console.log('Payment Success:', result);
+                
+                // Display detailed success information
+                if (result.success) {
+                    const success = result.success;
+                    resultContainer.innerHTML = `
+                        <div class="success">
+                            <h3>✅ Payment Successful!</h3>
+                            <div class="result-details">
+                                ${success.paymentIntentId ? `<p><strong>Payment Intent ID:</strong> ${success.paymentIntentId}</p>` : ''}
+                                ${success.status ? `<p><strong>Status:</strong> ${success.status === 'succeeded' ? '✅' : '⏳'} ${success.status}</p>` : ''}
+                                ${success.amount ? `<p><strong>Amount:</strong> $${(success.amount / 100).toFixed(2)} ${(success.currency || 'USD').toUpperCase()}</p>` : ''}
+                                ${success.description ? `<p><strong>Description:</strong> ${success.description}</p>` : ''}
+                                ${success.paymentMethodId ? `<p><strong>Payment Method ID:</strong> ${success.paymentMethodId}</p>` : ''}
+                                ${success.last4 ? `<p><strong>Card:</strong> ${success.brand} ****${success.last4}</p>` : ''}
+                                ${success.cardholderName ? `<p><strong>Cardholder:</strong> ${success.cardholderName}</p>` : ''}
+                                ${success.real_transaction ? '<p><strong>🔥 REAL TRANSACTION:</strong> This was processed with actual Stripe API!</p>' : ''}
+                                ${success.simulation_note ? `<p><strong>ℹ️ Note:</strong> ${success.simulation_note}</p>` : ''}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultContainer.innerHTML = `<div class="success">Payment completed: ${JSON.stringify(result)}</div>`;
+                }
+                
+                resultContainer.style.display = 'block';
+
+                return result;
+
             } catch (e) {
                 console.error('Token Exception:', e);
-                resultContainer.textContent = `Token Error: ${e.message}`;
-                resultContainer.className = 'error';
+                resultContainer.innerHTML = `<div class="error">Token Error: ${e.message}</div>`;
                 resultContainer.style.display = 'block';
                 return { error: e.message };
             }
@@ -241,6 +325,10 @@
         // Optional: Add event listener for manual testing in the browser
         document.getElementById('submit-button').addEventListener('click', async () => {
             const cardName = document.getElementById('card-name').value;
+            const amount = document.getElementById('payment-amount').value;
+            const description = document.getElementById('payment-description').value;
+            
+            console.log('Manual test triggered with:', { cardName, amount, description });
             await window.triggerStripePayment({ name: cardName });
         });
 
