@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>真实Stripe Token创建示例</title>
+    <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body>
+    <div id="payment-form">
+        <div id="card-element">
+            <!-- Stripe Elements会在这里创建安全的卡片输入框 -->
+        </div>
+        <button id="submit-button">创建Token</button>
+        <div id="result"></div>
+    </div>
+
+    <script>
+        // 1. 初始化Stripe（使用你的公钥）
+        const stripe = Stripe('pk_test_your_publishable_key_here');
+        const elements = stripe.elements();
+
+        // 2. 创建卡片元素
+        const cardElement = elements.create('card', {
+            style: {
+                base: {
+                    fontSize: '16px',
+                    color: '#424770',
+                    '::placeholder': {
+                        color: '#aab7c4',
+                    },
+                },
+            },
+        });
+
+        // 3. 挂载卡片元素
+        cardElement.mount('#card-element');
+
+        // 4. 处理表单提交
+        document.getElementById('submit-button').addEventListener('click', async () => {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                // 方法1: 创建PaymentMethod（现代推荐方式）
+                const { paymentMethod, error: pmError } = await stripe.createPaymentMethod({
+                    type: 'card',
+                    card: cardElement,
+                    billing_details: {
+                        name: 'John Doe',
+                        email: 'john@example.com',
+                    },
+                });
+
+                if (pmError) {
+                    resultDiv.innerHTML = `PaymentMethod错误: ${pmError.message}`;
+                    return;
+                }
+
+                resultDiv.innerHTML = `
+                    <h3>PaymentMethod创建成功！</h3>
+                    <p><strong>ID:</strong> ${paymentMethod.id}</p>
+                    <p><strong>卡片品牌:</strong> ${paymentMethod.card.brand}</p>
+                    <p><strong>后四位:</strong> ****${paymentMethod.card.last4}</p>
+                    <p><strong>过期时间:</strong> ${paymentMethod.card.exp_month}/${paymentMethod.card.exp_year}</p>
+                `;
+
+                // 方法2: 创建Token（旧方式，仍然支持）
+                const { token, error: tokenError } = await stripe.createToken(cardElement, {
+                    name: 'John Doe',
+                    address_line1: '123 Main St',
+                    address_city: 'San Francisco',
+                    address_state: 'CA',
+                    address_zip: '94111',
+                    address_country: 'US',
+                });
+
+                if (tokenError) {
+                    console.error('Token错误:', tokenError.message);
+                    return;
+                }
+
+                console.log('Token创建成功:', token);
+                resultDiv.innerHTML += `
+                    <h3>Token也创建成功！</h3>
+                    <p><strong>Token ID:</strong> ${token.id}</p>
+                    <p><strong>卡片品牌:</strong> ${token.card.brand}</p>
+                    <p><strong>后四位:</strong> ****${token.card.last4}</p>
+                `;
+
+            } catch (error) {
+                resultDiv.innerHTML = `错误: ${error.message}`;
+            }
+        });
+
+        // 5. 处理实时验证错误
+        cardElement.on('change', ({ error }) => {
+            const displayError = document.getElementById('card-errors');
+            if (error) {
+                displayError.textContent = error.message;
+            } else {
+                displayError.textContent = '';
+            }
+        });
+    </script>
+
+    <div id="card-errors" role="alert" style="color: red; margin-top: 10px;"></div>
+</body>
+</html>

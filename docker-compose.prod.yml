@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  payment-api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: payment-security-api-prod
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DOCKER_ENV=true
+      - HTTPS_ONLY=true
+      - SECURE_COOKIES=true
+    env_file:
+      - .env.production
+    volumes:
+      - ./logs:/app/logs:rw
+      - /etc/localtime:/etc/localtime:ro
+    restart: always
+    networks:
+      - payment-network
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/logs
+
+  redis:
+    image: redis:7-alpine
+    container_name: payment-redis-prod
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data:rw
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    restart: always
+    networks:
+      - payment-network
+    command: redis-server /usr/local/etc/redis/redis.conf
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+
+  nginx:
+    image: nginx:alpine
+    container_name: payment-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx:rw
+      - /etc/localtime:/etc/localtime:ro
+    restart: always
+    networks:
+      - payment-network
+    depends_on:
+      - payment-api
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+
+  # Log aggregation service
+  fluentd:
+    image: fluent/fluentd:v1.16-debian-1
+    container_name: payment-fluentd
+    volumes:
+      - ./fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - ./logs:/var/log/app:ro
+    networks:
+      - payment-network
+    restart: always
+    depends_on:
+      - payment-api
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: payment-prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - payment-network
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+networks:
+  payment-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
